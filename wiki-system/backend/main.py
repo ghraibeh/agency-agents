@@ -138,19 +138,40 @@ async def query_openrag(messages: list[dict]) -> dict:
 def _extract_sources(raw: dict) -> list[dict]:
     """
     OpenRAG returns source citations in response["extra"]["sources"].
-    Each source has: link, file_url, chunk_url, metadata {filename, page, ...}
+    Each source has: link, file_url, chunk_url, source (filename), metadata, ...
+
+    NOTE: "extra" may be a JSON string in some OpenRAG versions — we parse it
+    if needed before reading sources.
 
     We normalise to a simple {document, section, link} shape for the frontend.
     """
+    import json as _json
+
     sources = []
 
+    # "extra" may be a dict or a JSON-encoded string
+    extra = raw.get("extra", {})
+    if isinstance(extra, str):
+        try:
+            extra = _json.loads(extra)
+        except Exception:
+            extra = {}
+
     # Primary location: extra.sources (OpenRAG standard)
-    for s in raw.get("extra", {}).get("sources", []):
+    # Each source: {source, file_url, chunk_url, _id, metadata: {filename, page, ...}}
+    for s in extra.get("sources", []):
         meta = s.get("metadata", {})
+        # "source" field holds the original filename; fall back to metadata or chunk_url
+        doc_name = (
+            s.get("source")                    # e.g. "Employee Handbook.pdf"
+            or meta.get("filename")
+            or s.get("file_url", "Unknown")
+        )
+        page = meta.get("page")
         sources.append({
-            "document": meta.get("filename", s.get("link", "Unknown")),
-            "section": f"page {meta['page']}" if meta.get("page") else "",
-            "link": s.get("link", s.get("chunk_url", "")),
+            "document": doc_name,
+            "section": f"page {page}" if page else "",
+            "link": s.get("chunk_url", s.get("link", "")),
         })
 
     # Fallback: some OpenRAG versions may put sources inside choices[0].message
