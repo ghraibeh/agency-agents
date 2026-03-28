@@ -1,0 +1,79 @@
+version: "3.9"
+
+# ============================================================
+# Employee Wiki Assistant — Full Stack
+#
+# Services:
+#   wiki    — the chat web app (this repo)
+#   openrag — the RAG engine (https://github.com/linagora/openrag)
+#
+# Quick start:
+#   1. cp .env.example .env  and fill in your LLM credentials
+#   2. docker compose up -d
+#   3. Open http://localhost:8000  (chat UI)
+#      Open http://localhost:8081  (document indexer UI)
+# ============================================================
+
+services:
+
+  # ----------------------------------------------------------
+  # Wiki chat application
+  # ----------------------------------------------------------
+  wiki:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${WIKI_PORT:-8000}:8000"
+    environment:
+      OPENRAG_BASE_URL: "http://openrag:${OPENRAG_PORT:-8080}/api/v1"
+      OPENRAG_API_KEY:  "${OPENRAG_API_KEY}"
+      OPENRAG_MODEL:    "${OPENRAG_MODEL:-openrag}"
+      APP_TITLE:        "${APP_TITLE:-Employee Wiki Assistant}"
+      SYSTEM_PROMPT:    "${SYSTEM_PROMPT:-}"
+    depends_on:
+      openrag:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - wiki-net
+
+  # ----------------------------------------------------------
+  # OpenRAG — RAG engine
+  # Deploy from: https://github.com/linagora/openrag
+  #
+  # This service block assumes you have cloned OpenRAG into
+  # ./openrag/ and it provides a docker-compose-compatible
+  # service. Adjust the image/build path for your deployment.
+  #
+  # Alternatively, point OPENRAG_BASE_URL to an existing
+  # OpenRAG instance and remove this service block entirely.
+  # ----------------------------------------------------------
+  openrag:
+    image: linagora/openrag:latest
+    # Or build from source:
+    # build:
+    #   context: ./openrag
+    ports:
+      - "${OPENRAG_PORT:-8080}:8080"
+      - "${OPENRAG_INDEXER_PORT:-8081}:8081"
+    environment:
+      AUTH_TOKEN:        "${OPENRAG_API_KEY}"
+      BASE_URL:          "${LLM_BASE_URL}"
+      API_KEY:           "${LLM_API_KEY}"
+      MODEL:             "${LLM_MODEL:-gpt-4o-mini}"
+      EMBEDDER_MODEL_NAME: "${EMBEDDER_MODEL:-jinaai/jina-embeddings-v3}"
+      RERANKER_ENABLED:  "${RERANKER_ENABLED:-false}"
+      APP_PORT:          "${OPENRAG_PORT:-8080}"
+    volumes:
+      - openrag-data:/app/data
+    restart: unless-stopped
+    networks:
+      - wiki-net
+
+volumes:
+  openrag-data:
+
+networks:
+  wiki-net:
+    driver: bridge

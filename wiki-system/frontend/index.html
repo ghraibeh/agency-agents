@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Employee Wiki Assistant</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+  <!-- Sidebar -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <span class="logo">📚</span>
+      <h1 class="app-title">Wiki Assistant</h1>
+      <button class="sidebar-toggle" id="sidebarClose" aria-label="Close sidebar">✕</button>
+    </div>
+
+    <button class="btn-new-chat" id="newChatBtn">+ New conversation</button>
+
+    <nav class="chat-history" id="chatHistory">
+      <!-- Populated by JS -->
+    </nav>
+
+    <div class="sidebar-footer">
+      <button class="btn-upload" id="openUploadBtn">⬆ Upload document</button>
+      <div class="status-dot" id="statusDot" title="OpenRAG connection status"></div>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main">
+    <!-- Topbar -->
+    <header class="topbar">
+      <button class="sidebar-toggle" id="sidebarOpen" aria-label="Open sidebar">☰</button>
+      <span class="topbar-title" id="topbarTitle">Employee Wiki Assistant</span>
+    </header>
+
+    <!-- Messages -->
+    <div class="messages" id="messages">
+      <div class="welcome">
+        <div class="welcome-icon">📚</div>
+        <h2>Employee Wiki Assistant</h2>
+        <p>Ask anything about company policies, IT setup, HR procedures, onboarding, and more.</p>
+        <div class="suggestions">
+          <button class="suggestion" data-q="What is our vacation policy?">Vacation policy</button>
+          <button class="suggestion" data-q="How do I set up VPN on my laptop?">VPN setup</button>
+          <button class="suggestion" data-q="What are the steps for expense reimbursement?">Expense reimbursement</button>
+          <button class="suggestion" data-q="What mandatory training do I need to complete?">Mandatory training</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Input -->
+    <footer class="input-area">
+      <form class="input-form" id="inputForm">
+        <textarea
+          id="questionInput"
+          class="input-box"
+          placeholder="Ask a question about company policies, IT, HR…"
+          rows="1"
+          autocomplete="off"
+        ></textarea>
+        <button type="submit" class="send-btn" id="sendBtn" aria-label="Send">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <line x1="22" y1="2" x2="11" y2="13"></line>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+          </svg>
+        </button>
+      </form>
+      <p class="disclaimer">Answers are sourced from company documents. Always verify critical decisions with HR or IT.</p>
+    </footer>
+  </main>
+
+  <!-- Upload modal -->
+  <div class="modal-overlay" id="uploadModal" hidden>
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Upload Document</h3>
+        <button class="modal-close" id="closeUploadBtn">✕</button>
+      </div>
+      <div class="modal-body">
+        <p>Upload company documents to the knowledge base. Supported formats: PDF, DOCX, TXT, MD, images, audio.</p>
+        <div class="drop-zone" id="dropZone">
+          <span class="drop-icon">📄</span>
+          <p>Drag &amp; drop files here, or <label class="file-label" for="fileInput">browse</label></p>
+          <input type="file" id="fileInput" class="file-input" multiple
+            accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.mp3,.mp4" />
+        </div>
+        <div id="uploadProgress" class="upload-progress" hidden>
+          <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+          <p id="progressLabel">Uploading…</p>
+        </div>
+        <div id="uploadResults" class="upload-results"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
