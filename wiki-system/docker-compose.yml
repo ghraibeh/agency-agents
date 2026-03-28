@@ -4,14 +4,24 @@ version: "3.9"
 # Employee Wiki Assistant — Full Stack
 #
 # Services:
-#   wiki    — the chat web app (this repo)
-#   openrag — the RAG engine (https://github.com/linagora/openrag)
+#   wiki        — the chat web app (this repo)
+#   openrag     — RAG engine  (https://github.com/linagora/openrag)
+#   indexer-ui  — document upload web UI
+#
+# OpenRAG API endpoints used by the wiki app:
+#   POST /v1/chat/completions           — answer questions
+#   POST /indexer/partition/{p}/file/{id} — index documents
+#   GET  /health_check                  — liveness probe
+#   GET  /v1/models                     — list models
 #
 # Quick start:
-#   1. cp .env.example .env  and fill in your LLM credentials
-#   2. docker compose up -d
-#   3. Open http://localhost:8000  (chat UI)
-#      Open http://localhost:8081  (document indexer UI)
+#   1. cp .env.example .env
+#   2. Fill in LLM_BASE_URL, LLM_API_KEY, LLM_MODEL, OPENRAG_API_KEY
+#   3. docker compose up -d
+#   4. Open http://localhost:8000       → chat UI
+#      Open http://localhost:3042       → document indexer UI
+#      Open http://localhost:8090       → OpenRAG built-in Chainlit UI
+#      Open http://localhost:8080/docs  → OpenRAG API docs
 # ============================================================
 
 services:
@@ -26,53 +36,116 @@ services:
     ports:
       - "${WIKI_PORT:-8000}:8000"
     environment:
-      OPENRAG_BASE_URL: "http://openrag:${OPENRAG_PORT:-8080}/api/v1"
-      OPENRAG_API_KEY:  "${OPENRAG_API_KEY}"
-      OPENRAG_MODEL:    "${OPENRAG_MODEL:-openrag}"
-      APP_TITLE:        "${APP_TITLE:-Employee Wiki Assistant}"
-      SYSTEM_PROMPT:    "${SYSTEM_PROMPT:-}"
+      # Point at OpenRAG root (no /v1 suffix — the app appends the right paths)
+      OPENRAG_BASE_URL:  "http://openrag:8080"
+      OPENRAG_API_KEY:   "${OPENRAG_API_KEY:-sk-openrag-1234}"
+      OPENRAG_MODEL:     "${OPENRAG_MODEL:-openrag-all}"
+      OPENRAG_PARTITION: "${OPENRAG_PARTITION:-default}"
+      APP_TITLE:         "${APP_TITLE:-Employee Wiki Assistant}"
+      SYSTEM_PROMPT:     "${SYSTEM_PROMPT:-}"
     depends_on:
-      openrag:
-        condition: service_started
+      - openrag
     restart: unless-stopped
     networks:
       - wiki-net
 
   # ----------------------------------------------------------
   # OpenRAG — RAG engine
-  # Deploy from: https://github.com/linagora/openrag
+  # Image: linagoraai/openrag:latest
+  # Docs:  https://github.com/linagora/openrag
   #
-  # This service block assumes you have cloned OpenRAG into
-  # ./openrag/ and it provides a docker-compose-compatible
-  # service. Adjust the image/build path for your deployment.
-  #
-  # Alternatively, point OPENRAG_BASE_URL to an existing
-  # OpenRAG instance and remove this service block entirely.
+  # Requires an external LLM (OpenAI, Ollama, vLLM, etc.)
+  # configured via BASE_URL / API_KEY / MODEL below.
   # ----------------------------------------------------------
   openrag:
-    image: linagora/openrag:latest
-    # Or build from source:
-    # build:
-    #   context: ./openrag
+    image: linagoraai/openrag:latest
     ports:
-      - "${OPENRAG_PORT:-8080}:8080"
-      - "${OPENRAG_INDEXER_PORT:-8081}:8081"
+      - "${OPENRAG_PORT:-8080}:8080"      # REST API + API docs (/docs)
+      - "${CHAINLIT_PORT:-8090}:8090"     # Built-in Chainlit chat UI
+      - "8265:8265"                        # Ray dashboard (internal use)
     environment:
-      AUTH_TOKEN:        "${OPENRAG_API_KEY}"
-      BASE_URL:          "${LLM_BASE_URL}"
-      API_KEY:           "${LLM_API_KEY}"
-      MODEL:             "${LLM_MODEL:-gpt-4o-mini}"
+      # Authentication — must match OPENRAG_API_KEY above
+      AUTH_TOKEN:          "${OPENRAG_API_KEY:-sk-openrag-1234}"
+
+      # LLM backend (required — OpenRAG has no built-in LLM)
+      BASE_URL:            "${LLM_BASE_URL}"
+      API_KEY:             "${LLM_API_KEY}"
+      MODEL:               "${LLM_MODEL:-gpt-4o-mini}"
+
+      # Vision/image model (optional)
+      VLM_BASE_URL:        "${VLM_BASE_URL:-}"
+      VLM_API_KEY:         "${VLM_API_KEY:-}"
+      VLM_MODEL:           "${VLM_MODEL:-}"
+
+      # Embeddings (Jina v3 runs locally via vLLM — no external API needed)
       EMBEDDER_MODEL_NAME: "${EMBEDDER_MODEL:-jinaai/jina-embeddings-v3}"
-      RERANKER_ENABLED:  "${RERANKER_ENABLED:-false}"
-      APP_PORT:          "${OPENRAG_PORT:-8080}"
+      EMBEDDER_BASE_URL:   "http://vllm:8000/v1"
+      EMBEDDER_API_KEY:    "EMPTY"
+
+      # Retrieval settings
+      RETRIEVER_TOP_K:     "${RETRIEVER_TOP_K:-20}"
+      RERANKER_ENABLED:    "${RERANKER_ENABLED:-false}"
+
+      # UI
+      WITH_CHAINLIT_UI:    "true"
+      SAVE_UPLOADED_FILES: "true"
+      APP_PORT:            "8080"
+      LOG_LEVEL:           "${LOG_LEVEL:-INFO}"
     volumes:
       - openrag-data:/app/data
+    shm_size: "2gb"        # Required for Ray (increase for large corpora)
     restart: unless-stopped
     networks:
       - wiki-net
 
+  # ----------------------------------------------------------
+  # Document indexer UI
+  # Drag-and-drop web interface for uploading company documents.
+  # ----------------------------------------------------------
+  indexer-ui:
+    image: linagoraai/indexer-ui:latest
+    ports:
+      - "${INDEXER_PORT:-3042}:3000"
+    environment:
+      API_BASE_URL:         "http://openrag:8080"
+      INCLUDE_CREDENTIALS:  "false"
+    depends_on:
+      - openrag
+    restart: unless-stopped
+    networks:
+      - wiki-net
+
+  # ----------------------------------------------------------
+  # vLLM — embedding service (Jina v3, runs locally, no GPU req)
+  # Provides the embedding model that OpenRAG uses to index
+  # and search documents. Remove if using an external embedder.
+  # ----------------------------------------------------------
+  vllm:
+    image: vllm/openai:latest
+    ports:
+      - "8001:8000"         # Exposed on 8001 to avoid conflict with wiki
+    command: >
+      --model jinaai/jina-embeddings-v3
+      --task embedding
+      --trust-remote-code
+      --dtype float16
+    volumes:
+      - vllm-cache:/root/.cache/huggingface
+    restart: unless-stopped
+    networks:
+      - wiki-net
+    # Uncomment for GPU acceleration:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
 volumes:
   openrag-data:
+  vllm-cache:
 
 networks:
   wiki-net:

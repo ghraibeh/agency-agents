@@ -306,6 +306,8 @@ body {
 }
 .source-item::before { content: "📄"; font-size: 11px; }
 .source-doc  { color: var(--text); font-weight: 500; }
+.source-doc[href] { color: var(--accent); text-decoration: none; }
+.source-doc[href]:hover { text-decoration: underline; }
 .source-section { color: var(--text-dim); }
 
 /* Typing indicator */

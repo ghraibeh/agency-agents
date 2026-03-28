@@ -167,7 +167,9 @@ function appendBotMessage(text, sources = []) {
       <div class="sources-label">Sources</div>
       ${sources.map(s => `
         <div class="source-item">
-          <span class="source-doc">${escapeHtml(s.document || "Unknown")}</span>
+          ${s.link
+            ? `<a class="source-doc" href="${escapeHtml(s.link)}" target="_blank" rel="noopener">${escapeHtml(s.document || "Unknown")}</a>`
+            : `<span class="source-doc">${escapeHtml(s.document || "Unknown")}</span>`}
           ${s.section ? `<span class="source-section">— ${escapeHtml(s.section)}</span>` : ""}
         </div>`).join("")}
     </div>` : "";

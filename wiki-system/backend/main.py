@@ -1,6 +1,13 @@
 """
 Employee Wiki Assistant — FastAPI backend
 Connects to OpenRAG (OpenAI-compatible RAG API) and serves the chat UI.
+
+OpenRAG API reference: https://github.com/linagora/openrag
+- Chat completions: POST /v1/chat/completions
+  Sources are returned in response.extra.sources (not inside choices[].message)
+- Document upload:  POST /indexer/partition/{partition}/file/{file_id}
+- Health:           GET  /health_check
+- Models:           GET  /v1/models
 """
 
 import os
@@ -10,8 +17,8 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -19,11 +26,17 @@ from pydantic import BaseModel
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-OPENRAG_BASE_URL = os.environ.get("OPENRAG_BASE_URL", "http://openrag:8080/api/v1").rstrip("/")
-OPENRAG_API_KEY  = os.environ.get("OPENRAG_API_KEY", "changeme")
-OPENRAG_MODEL    = os.environ.get("OPENRAG_MODEL", "openrag")
-APP_TITLE        = os.environ.get("APP_TITLE", "Employee Wiki Assistant")
-APP_PORT         = int(os.environ.get("APP_PORT", "8000"))
+# OPENRAG_BASE_URL should point to the root of OpenRAG (no trailing path).
+# The wiki app appends /v1 for OpenAI-compatible endpoints and /indexer for
+# document management. Example: http://openrag:8080
+OPENRAG_BASE_URL    = os.environ.get("OPENRAG_BASE_URL", "http://openrag:8080").rstrip("/")
+OPENRAG_API_KEY     = os.environ.get("OPENRAG_API_KEY", "sk-openrag-1234")
+# Model: "openrag-all" queries all partitions; "openrag-{name}" queries one.
+OPENRAG_MODEL       = os.environ.get("OPENRAG_MODEL", "openrag-all")
+# Partition for document uploads (default partition created at startup)
+OPENRAG_PARTITION   = os.environ.get("OPENRAG_PARTITION", "default")
+APP_TITLE           = os.environ.get("APP_TITLE", "Employee Wiki Assistant")
+APP_PORT            = int(os.environ.get("APP_PORT", "8000"))
 
 SYSTEM_PROMPT = os.environ.get(
     "SYSTEM_PROMPT",
@@ -59,10 +72,10 @@ if frontend_static.exists():
 
 
 # ---------------------------------------------------------------------------
-# Models
+# Pydantic models
 # ---------------------------------------------------------------------------
 class ChatMessage(BaseModel):
-    role: str  # "user" | "assistant" | "system"
+    role: str       # "user" | "assistant" | "system"
     content: str
 
 
@@ -80,15 +93,19 @@ class ChatResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # OpenRAG client helpers
 # ---------------------------------------------------------------------------
-def _openrag_headers() -> dict:
-    return {
-        "Authorization": f"Bearer {OPENRAG_API_KEY}",
-        "Content-Type": "application/json",
-    }
+def _auth_header() -> dict:
+    return {"Authorization": f"Bearer {OPENRAG_API_KEY}"}
+
+
+def _json_header() -> dict:
+    return {**_auth_header(), "Content-Type": "application/json"}
 
 
 async def query_openrag(messages: list[dict]) -> dict:
-    """Send a chat completion request to OpenRAG and return the raw response."""
+    """
+    POST /v1/chat/completions to OpenRAG.
+    Returns the full raw JSON response (sources are under response["extra"]["sources"]).
+    """
     payload = {
         "model": OPENRAG_MODEL,
         "messages": [{"role": "system", "content": SYSTEM_PROMPT}] + messages,
@@ -97,8 +114,8 @@ async def query_openrag(messages: list[dict]) -> dict:
     async with httpx.AsyncClient(timeout=120.0) as client:
         try:
             resp = await client.post(
-                f"{OPENRAG_BASE_URL}/chat/completions",
-                headers=_openrag_headers(),
+                f"{OPENRAG_BASE_URL}/v1/chat/completions",
+                headers=_json_header(),
                 json=payload,
             )
             resp.raise_for_status()
@@ -107,9 +124,8 @@ async def query_openrag(messages: list[dict]) -> dict:
             raise HTTPException(
                 status_code=503,
                 detail=(
-                    "Cannot connect to OpenRAG. "
-                    f"Check that OPENRAG_BASE_URL={OPENRAG_BASE_URL} is correct "
-                    "and the service is running."
+                    f"Cannot connect to OpenRAG at {OPENRAG_BASE_URL}. "
+                    "Check OPENRAG_BASE_URL and ensure the service is running."
                 ),
             )
         except httpx.HTTPStatusError as e:
@@ -121,35 +137,39 @@ async def query_openrag(messages: list[dict]) -> dict:
 
 def _extract_sources(raw: dict) -> list[dict]:
     """
-    Extract source document citations from the OpenRAG response.
-    OpenRAG may return sources in different fields depending on version.
+    OpenRAG returns source citations in response["extra"]["sources"].
+    Each source has: link, file_url, chunk_url, metadata {filename, page, ...}
+
+    We normalise to a simple {document, section, link} shape for the frontend.
     """
     sources = []
-    choice = raw.get("choices", [{}])[0]
-    message = choice.get("message", {})
 
-    # Try common OpenRAG source fields
-    for field in ("context", "sources", "references", "citations"):
-        if field in message and message[field]:
-            for s in message[field]:
-                if isinstance(s, dict):
-                    sources.append({
-                        "document": s.get("document", s.get("source", s.get("title", "Unknown"))),
-                        "section": s.get("section", s.get("chunk", "")),
-                        "score": s.get("score", s.get("relevance", None)),
-                    })
-                elif isinstance(s, str):
-                    sources.append({"document": s, "section": "", "score": None})
-            break
+    # Primary location: extra.sources (OpenRAG standard)
+    for s in raw.get("extra", {}).get("sources", []):
+        meta = s.get("metadata", {})
+        sources.append({
+            "document": meta.get("filename", s.get("link", "Unknown")),
+            "section": f"page {meta['page']}" if meta.get("page") else "",
+            "link": s.get("link", s.get("chunk_url", "")),
+        })
 
-    # Also check top-level response
-    if not sources and "sources" in raw:
-        for s in raw["sources"]:
-            sources.append({
-                "document": s.get("document", s.get("title", "Unknown")),
-                "section": s.get("section", ""),
-                "score": None,
-            })
+    # Fallback: some OpenRAG versions may put sources inside choices[0].message
+    if not sources:
+        message = raw.get("choices", [{}])[0].get("message", {})
+        for field in ("context", "sources", "references"):
+            items = message.get(field, [])
+            if items:
+                for s in items:
+                    if isinstance(s, dict):
+                        sources.append({
+                            "document": s.get("filename", s.get("document",
+                                             s.get("source", s.get("title", "Unknown")))),
+                            "section": s.get("section", s.get("chunk", "")),
+                            "link": s.get("link", ""),
+                        })
+                    elif isinstance(s, str):
+                        sources.append({"document": s, "section": "", "link": ""})
+                break
 
     return sources
 
@@ -168,14 +188,17 @@ async def serve_index():
 
 @app.get("/health")
 async def health():
-    """Health check — also verifies OpenRAG reachability."""
+    """
+    Health check for this app, plus OpenRAG reachability probe.
+    Uses OpenRAG's /health_check endpoint.
+    """
     openrag_ok = False
     openrag_error = None
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             r = await client.get(
-                f"{OPENRAG_BASE_URL}/models",
-                headers=_openrag_headers(),
+                f"{OPENRAG_BASE_URL}/health_check",
+                headers=_auth_header(),
             )
             openrag_ok = r.status_code < 400
     except Exception as e:
@@ -195,7 +218,7 @@ async def health():
 async def chat(req: ChatRequest):
     """
     Main chat endpoint.
-    Accepts a list of messages and returns an answer with source citations.
+    Forwards messages to OpenRAG and returns the answer with source citations.
     """
     if not req.messages:
         raise HTTPException(status_code=400, detail="messages cannot be empty")
@@ -217,61 +240,97 @@ async def chat(req: ChatRequest):
 @app.post("/api/upload")
 async def upload_document(
     file: UploadFile = File(...),
-    description: str = Form(default=""),
+    partition: str = Form(default=""),
 ):
     """
     Upload a document to OpenRAG for indexing.
-    Supported formats: PDF, DOCX, TXT, MD, PNG, JPG, MP3, MP4, etc.
+    Endpoint: POST /indexer/partition/{partition}/file/{file_id}
+    Supported: PDF, DOCX, PPTX, XLS, TXT, MD, PNG, JPG, MP3, MP4, etc.
+
+    Returns immediately with a task ID; indexing happens asynchronously.
     """
-    allowed_types = {
-        "application/pdf",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "text/plain",
-        "text/markdown",
-        "image/png",
-        "image/jpeg",
-        "audio/mpeg",
-        "audio/mp4",
-    }
+    target_partition = partition.strip() or OPENRAG_PARTITION
+    # Use filename (stripped of extension) as the file_id key.
+    # Replace spaces and special chars with hyphens for a safe URL segment.
+    safe_name = "".join(
+        c if c.isalnum() or c in "-_." else "-" for c in (file.filename or "upload")
+    )
+    file_id = f"{safe_name}-{uuid.uuid4().hex[:8]}"
 
     content_type = file.content_type or "application/octet-stream"
-    # Be lenient — OpenRAG handles format detection
     content = await file.read()
 
     async with httpx.AsyncClient(timeout=300.0) as client:
         try:
+            url = f"{OPENRAG_BASE_URL}/indexer/partition/{target_partition}/file/{file_id}"
             resp = await client.post(
-                f"{OPENRAG_BASE_URL}/index",
-                headers={"Authorization": f"Bearer {OPENRAG_API_KEY}"},
+                url,
+                headers=_auth_header(),
                 files={"file": (file.filename, content, content_type)},
-                data={"description": description} if description else {},
             )
-            if resp.status_code == 404:
-                # Try alternative indexer endpoint
-                resp = await client.post(
-                    f"{OPENRAG_BASE_URL}/upload",
-                    headers={"Authorization": f"Bearer {OPENRAG_API_KEY}"},
-                    files={"file": (file.filename, content, content_type)},
-                )
             resp.raise_for_status()
-            return {"status": "indexed", "filename": file.filename, "detail": resp.json()}
+            body = resp.json() if resp.content else {}
+
+            # Poll task status URL if provided
+            task_url = body.get("task_url") or body.get("status_url")
+            return {
+                "status": "queued",
+                "filename": file.filename,
+                "file_id": file_id,
+                "partition": target_partition,
+                "task_url": task_url,
+                "detail": body,
+            }
         except httpx.ConnectError:
             raise HTTPException(status_code=503, detail="Cannot connect to OpenRAG indexer.")
         except httpx.HTTPStatusError as e:
             raise HTTPException(
                 status_code=e.response.status_code,
-                detail=f"Indexer error: {e.response.text}",
+                detail=f"Indexer error ({e.response.status_code}): {e.response.text}",
             )
+
+
+@app.get("/api/upload/status/{task_id}")
+async def upload_status(task_id: str):
+    """
+    Poll the status of an indexing task.
+    OpenRAG task states: QUEUED, RUNNING, SUCCESS, FAILED
+    """
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            r = await client.get(
+                f"{OPENRAG_BASE_URL}/indexer/task/{task_id}",
+                headers=_auth_header(),
+            )
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=str(e))
 
 
 @app.get("/api/models")
 async def list_models():
-    """List models available in this OpenRAG instance."""
+    """List models available in this OpenRAG instance (GET /v1/models)."""
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             r = await client.get(
-                f"{OPENRAG_BASE_URL}/models",
-                headers=_openrag_headers(),
+                f"{OPENRAG_BASE_URL}/v1/models",
+                headers=_auth_header(),
+            )
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=str(e))
+
+
+@app.get("/api/partitions")
+async def list_partitions():
+    """List document partitions (knowledge base collections) available to this token."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            r = await client.get(
+                f"{OPENRAG_BASE_URL}/partition/",
+                headers=_auth_header(),
             )
             r.raise_for_status()
             return r.json()
