@@ -1,0 +1,26 @@
+{
+  "name": "3d-navigation-kiosk",
+  "version": "1.0.0",
+  "description": "Futuristic 3D indoor navigation kiosk built with Three.js",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev":   "npx serve . --listen 3000",
+    "build": "npx vite build"
+  },
+  "keywords": ["threejs", "webgl", "indoor-navigation", "kiosk", "spatial-computing"],
+  "license": "MIT",
+  "devDependencies": {
+    "serve": "^14.2.3",
+    "vite": "^5.2.0"
+  },
+  "notes": {
+    "runtime": "Three.js r162 loaded from CDN via importmap. For offline/production use, bundle with Vite.",
+    "positioning": {
+      "ble":  "Requires Web Bluetooth (Chrome 79+, HTTPS). Real scanning via navigator.bluetooth.requestLEScan.",
+      "wifi": "Requires backend agent at GET /api/positioning/wifi returning {x,z,floor,confidence}.",
+      "vps":  "Set window.VPS_ENDPOINT + window.VPS_TOKEN before init('vps'). Compatible with Immersal REST API."
+    },
+    "gltf": "To load a real building model, call app.building.loadGLTF('/models/building.glb'). Mesh names must follow Floor_N_* convention."
+  }
+}

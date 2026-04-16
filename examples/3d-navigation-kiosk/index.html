@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <meta name="description" content="3D Indoor Navigation Kiosk — Three.js" />
+  <title>NAV3D — Indoor Kiosk</title>
+  <link rel="stylesheet" href="styles/kiosk.css" />
+
+  <!--
+    Import-map: resolves bare module specifiers to CDN.
+    In production, replace with a local bundle (Vite / esbuild) for:
+      - Faster cold start on kiosk hardware
+      - Offline operation (BLE positioning works without internet)
+      - Smaller footprint (tree-shaking removes unused Three.js classes)
+  -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three":            "https://unpkg.com/three@0.162.0/build/three.module.js",
+        "three/addons/":    "https://unpkg.com/three@0.162.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+
+  <!-- WebGL surface -->
+  <canvas id="kiosk-canvas" aria-label="3D building map"></canvas>
+
+  <!--
+    UI overlay is injected by UIOverlay.js into <body>.
+    This file intentionally contains no overlay markup so the overlay
+    lifecycle is fully managed by the app's state machine.
+  -->
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
